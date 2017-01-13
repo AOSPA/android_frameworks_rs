@@ -16,6 +16,8 @@
 
 #include "LinkerModule.h"
 
+#include "KernelSignature.h"
+
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -195,7 +197,7 @@ void Block::removeNonCodeLines() {
               Lines.end());
 }
 
-bool HeaderBlock::getRSKernelNames(SmallVectorImpl<StringRef> &Out) const {
+bool HeaderBlock::getRSKernelNames(SmallVectorImpl<std::string> &Out) const {
   for (const auto &L : Lines)
     if (L.contains("OpString")) {
       const Optional<StringRef> Name = L.getLHSIdentifier();
@@ -203,7 +205,16 @@ bool HeaderBlock::getRSKernelNames(SmallVectorImpl<StringRef> &Out) const {
         auto LStr = L.str();
         LStr.erase(std::remove(LStr.begin(), LStr.end(), '"'), LStr.end());
 
-        SPIRVLine(LStr).getRHSIdentifiers(Out);
+        llvm::SmallVector<llvm::StringRef, 2> KernelNames;
+        SPIRVLine(LStr).getRHSIdentifiers(KernelNames);
+
+        Out.clear();
+        // Returning StringRef to a destructed string is bad.
+        // Need to duplicate the contents before returning.
+        for (auto n : KernelNames) {
+          Out.push_back(n);
+        }
+
         return true;
       }
     }
@@ -368,8 +379,8 @@ LinkerModule::LinkerModule(std::istream &ModuleIn) {
     Optional<StringRef> Id = It->getLHSIdentifier();
     assert(Id && "Functions should start with OpFunction");
 
-    FunctionBlock &FunBlck =
-        *Id == "%main" ? addBlock<MainFunBlock>() : addBlock<FunctionBlock>();
+    FunctionBlock &FunBlck = KernelSignature::isWrapper(*Id) ?
+        addBlock<MainFunBlock>() : addBlock<FunctionBlock>();
     bool HasReturn = false;
 
     while (It != End) {

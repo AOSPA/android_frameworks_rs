@@ -8,13 +8,11 @@ target triple = "armv7-none-linux-gnueabi"
 
 ; CHECK: %rs_linker___GPUBlock = OpVariable %{{.+}} Uniform
 
-; CHECK: %main = OpFunction
+; CHECK: %__rsov_entry_k1 = OpFunction
 
 ; CHECK-NOT: OpFunctionCall
 
 ; CHECK: OpImageRead %v4uchar
-; CHECK: OpImageRead %v4uchar %[[RS_ALLOC:.*]] %{{.*}}
-; CHECK: OpImageWrite %{{.*}}[[RS_ALLOC]] %{{.*}} %{{.*}}
 ; CHECK: OpImageWrite
 
 

@@ -16,11 +16,13 @@
 
 #include "ReflectionPass.h"
 
+#include "KernelSignature.h"
+
 #include "RSAllocationUtils.h"
 #include "bcinfo/MetadataExtractor.h"
 #include "llvm/ADT/StringSwitch.h"
-#include "llvm/IR/Module.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
@@ -41,61 +43,8 @@ namespace rs2spirv {
 
 namespace {
 
-// Numeric value corresponds to the number of components.
-enum class Coords : size_t { None = 0, X, XY, XYZ, Last = XYZ };
-static const StringRef CoordsNames[] = {"x", "y", "z"};
-
-struct KernelSignature {
-  std::string returnType;
-  std::string name;
-  std::string argumentType;
-  Coords coordsKind;
-
-  void dump() const {
-    dbgs() << returnType << ' ' << name << '(' << argumentType;
-    const auto CoordsNum = size_t(coordsKind);
-    for (size_t i = 0; i != CoordsNum; ++i)
-      dbgs() << ", " << CoordsNames[i];
-
-    dbgs() << ")\n";
-  }
-};
-
-std::string TypeToString(const Type *Ty) {
-  assert(Ty);
-  if (Ty->isVoidTy())
-    return "void";
-
-  if (auto *IT = dyn_cast<IntegerType>(Ty)) {
-    if (IT->getBitWidth() == 32)
-      return "int";
-    else if (IT->getBitWidth() == 8)
-      return "uchar";
-    assert(false && "Unknown integer type");
-  }
-  if (Ty->isFloatTy())
-    return "float";
-
-  if (auto *VT = dyn_cast<VectorType>(Ty)) {
-    auto *ET = VT->getElementType();
-    if (auto *IT = dyn_cast<IntegerType>(ET)) {
-      if (IT->getBitWidth() == 32)
-        return "int4";
-      else if (IT->getBitWidth() == 8)
-        return "uchar4";
-
-      assert(false && "Unknown integer vector type");
-    }
-    if (ET->isFloatTy())
-      return "float4";
-
-    llvm_unreachable("Unknown vector type");
-  }
-
-  llvm_unreachable("Unknown type");
-}
-
 enum class RSType {
+  rs_bad = -1,
   rs_void,
   rs_uchar,
   rs_int,
@@ -113,7 +62,8 @@ RSType StrToRsTy(StringRef S) {
                   .Case("float", RSType::rs_float)
                   .Case("uchar4", RSType::rs_uchar4)
                   .Case("int4", RSType::rs_int4)
-                  .Case("float4", RSType::rs_float4);
+                  .Case("float4", RSType::rs_float4)
+                  .Default(RSType::rs_bad);
   return Ty;
 }
 
@@ -152,6 +102,8 @@ struct TypeMapping {
 };
 
 class ReflectionPass : public ModulePass {
+  typedef SmallVector<KernelSignature, 4> KernelSignatures;
+
   std::ostream &OS;
   bcinfo::MetadataExtractor &ME;
 
@@ -179,24 +131,43 @@ class ReflectionPass : public ModulePass {
     return TM;
   }
 
-  bool emitHeader(const Module &M);
+  std::string nextResultID();
+  std::string bufferNameToStructName(const std::string &);
+  std::string emitBuffer(const std::string &,
+                         const std::string &idBufVar = std::string(),
+                         const std::string &idArrTy = std::string());
+  std::string emitBufferUsingRSType(const std::string &,
+                                    const std::string &idBufVar = std::string(),
+                                    const std::string &idArrTy = std::string());
+  std::string emitInputBuffer(const KernelSignature &Kernel,
+                              const std::string &idBufVar = std::string(),
+                              const std::string &idArrTy = std::string());
+  std::string emitOutputBuffer(const KernelSignature &Kernel,
+                               const std::string &idBufVar = std::string(),
+                               const std::string &idArrTy = std::string());
+
+  bool emitHeader(const Module &M, const KernelSignatures &Kernel);
   bool emitDecorations(const Module &M,
-                       const SmallVectorImpl<RSAllocationInfo> &RSAllocs);
+                       const SmallVectorImpl<RSAllocationInfo> &RSAllocs,
+                       const KernelSignatures &Kernels,
+                       const std::string &idInput, const std::string &idOutput,
+                       const std::string &idInputMemTy,
+                       const std::string &idOutputMemTy);
   void emitCommonTypes();
   bool extractKernelSignatures(const Module &M,
                                SmallVectorImpl<KernelSignature> &Out);
   bool emitKernelTypes(const KernelSignature &Kernel);
-  bool emitInputImage(const KernelSignature &Kernel);
   void emitGLGlobalInput();
-  bool emitOutputImage(const KernelSignature &Kernel);
   bool emitRSAllocImages(const SmallVectorImpl<RSAllocationInfo> &RSAllocs);
   bool emitConstants(const KernelSignature &Kernel);
   void emitRTFunctions();
   bool emitRSAllocFunctions(
       Module &M, const SmallVectorImpl<RSAllocationInfo> &RSAllocs,
       const SmallVectorImpl<RSAllocationCallInfo> &RSAllocAccesses);
-  bool emitMain(const KernelSignature &Kernel,
-                const SmallVectorImpl<RSAllocationInfo> &RSAllocs);
+  bool emitMainUsingBuffersForInputOutput(
+      const KernelSignature &Kernel,
+      const SmallVectorImpl<RSAllocationInfo> &RSAllocs,
+      const std::string &inputBuffer, const std::string &outputBuffer);
 
 public:
   static char ID;
@@ -208,7 +179,13 @@ public:
   bool runOnModule(Module &M) override {
     DEBUG(dbgs() << "ReflectionPass\n");
 
-    if (!emitHeader(M)) {
+    KernelSignatures Kernels;
+    if (!extractKernelSignatures(M, Kernels)) {
+      errs() << "Extraction of kernels failed\n";
+      return false;
+    }
+
+    if (!emitHeader(M, Kernels)) {
       errs() << "Emiting header failed\n";
       return false;
     }
@@ -225,62 +202,65 @@ public:
       return false;
     }
 
-    if (!emitDecorations(M, RSAllocs)) {
+    if (!emitDecorations(M, RSAllocs, Kernels, "inputBuffer", "outputBuffer",
+                         "inputMemTy", "outputMemTy")) {
       errs() << "Emiting decorations failed\n";
       return false;
     }
 
     emitCommonTypes();
 
-    SmallVector<KernelSignature, 4> Kernels;
-    if (!extractKernelSignatures(M, Kernels)) {
-      errs() << "Extraction of kernels failed\n";
-      return false;
-    }
-
-    if (Kernels.size() != 1) {
-      errs() << "Non single-kernel modules are not supported\n";
-      return false;
-    }
-    const auto &Kernel = Kernels.front();
-
-    if (!emitKernelTypes(Kernel)) {
-      errs() << "Emitting kernel types failed\n";
-      return false;
-    }
-
-    if (!emitInputImage(Kernel)) {
-      errs() << "Emitting input image failed\n";
-      return false;
+    for (const auto &Kernel : Kernels) {
+      if (!emitKernelTypes(Kernel)) {
+        errs() << "Emitting kernel types for " << Kernel.name << " failed\n";
+        return false;
+      }
     }
 
     emitGLGlobalInput();
 
-    if (!emitOutputImage(Kernel)) {
-      errs() << "Emitting output image failed\n";
-      return false;
-    }
+    for (const auto &Kernel : Kernels) {
+      std::string inputBuffer =
+          emitInputBuffer(Kernel, "inputBuffer", "inputMemTy");
+      if (inputBuffer.empty()) {
+        errs() << "Emitting input buffer failed\n";
+        return false;
+      }
 
-    if (!emitRSAllocImages(RSAllocs)) {
-      errs() << "Emitting rs_allocation images failed\n";
-      return false;
-    }
+      std::string outputBuffer =
+          emitOutputBuffer(Kernel, "outputBuffer", "outputMemTy");
+      if (outputBuffer.empty()) {
+        errs() << "Emitting output buffer failed\n";
+        return false;
+      }
 
-    if (!emitConstants(Kernel)) {
-      errs() << "Emitting constants failed\n";
-      return false;
+      if (!emitRSAllocImages(RSAllocs)) {
+        errs() << "Emitting rs_allocation images for " << Kernel.name
+               << " failed\n";
+        return false;
+      }
+
+      if (!emitConstants(Kernel)) {
+        errs() << "Emitting constants for " << Kernel.name << " failed\n";
+        return false;
+      }
     }
 
     emitRTFunctions();
 
-    if (!emitRSAllocFunctions(M, RSAllocs, RSAllocAccesses)) {
-      errs() << "Emitting rs_allocation runtime functions failed\n";
-      return false;
-    }
+    for (const auto &Kernel : Kernels) {
+      if (!emitRSAllocFunctions(M, RSAllocs, RSAllocAccesses)) {
+        errs() << "Emitting rs_allocation runtime functions for " << Kernel.name
+               << " failed\n";
+        return false;
+      }
 
-    if (!emitMain(Kernel, RSAllocs)) {
-      errs() << "Emitting main failed\n";
-      return false;
+      if (!emitMainUsingBuffersForInputOutput(
+              Kernel, RSAllocs, Kernel.getTempName("inputBuffer"),
+              Kernel.getTempName("outputBuffer"))) {
+        errs() << "Emitting main using buffers failed\n";
+        return false;
+      }
     }
 
     // Return false, as the module is not modified.
@@ -308,7 +288,8 @@ ModulePass *createReflectionPass(std::ostream &OS,
   return new ReflectionPass(OS, ME);
 }
 
-bool ReflectionPass::emitHeader(const Module &M) {
+bool ReflectionPass::emitHeader(const Module &M,
+                                const KernelSignatures &Kernels) {
   DEBUG(dbgs() << "emitHeader\n");
 
   OS << "; SPIR-V\n"
@@ -320,10 +301,17 @@ bool ReflectionPass::emitHeader(const Module &M) {
         "      OpCapability StorageImageWriteWithoutFormat\n"
         "      OpCapability Addresses\n"
         " %glsl_ext_ins = OpExtInstImport \"GLSL.std.450\"\n"
-        "      OpMemoryModel Physical32 GLSL450\n"
-        "      OpEntryPoint GLCompute %main \"main\" %global_invocation_id\n"
-        "      OpExecutionMode %main LocalSize 1 1 1\n"
-        "      OpSource GLSL 450\n"
+        "      OpMemoryModel Physical32 GLSL450\n";
+  for (const auto &Kernel : Kernels) {
+    OS << "      OpEntryPoint GLCompute " << Kernel.getWrapperName() << " "
+       << "\"" << Kernel.name
+       << "\" %gl_GlobalInvocationID %gl_NumWorkGroups\n";
+  }
+  for (const auto &Kernel : Kernels) {
+    OS << "      OpExecutionMode " << Kernel.getWrapperName()
+       << " LocalSize 1 1 1\n";
+  }
+  OS << "      OpSource GLSL 450\n"
         "      OpSourceExtension \"GL_ARB_separate_shader_objects\"\n"
         "      OpSourceExtension \"GL_ARB_shading_language_420pack\"\n"
         "      OpSourceExtension \"GL_GOOGLE_cpp_style_line_directive\"\n"
@@ -348,17 +336,35 @@ bool ReflectionPass::emitHeader(const Module &M) {
 }
 
 bool ReflectionPass::emitDecorations(
-    const Module &M, const SmallVectorImpl<RSAllocationInfo> &RSAllocs) {
+    const Module &M, const SmallVectorImpl<RSAllocationInfo> &RSAllocs,
+    const KernelSignatures &Kernels, const std::string &inputBuffer,
+    const std::string &outputBuffer, const std::string &inputMemTy,
+    const std::string &outputMemTy) {
   DEBUG(dbgs() << "emitDecorations\n");
 
-  OS << "\n"
-        "      OpDecorate %global_invocation_id BuiltIn GlobalInvocationId\n"
-        "      OpDecorate %input_image DescriptorSet 0\n"
-        "      OpDecorate %input_image Binding 0\n"
-        "      OpDecorate %input_image NonWritable\n"
-        "      OpDecorate %output_image DescriptorSet 0\n"
-        "      OpDecorate %output_image Binding 1\n"
-        "      OpDecorate %output_image NonReadable\n";
+  const std::string &inputBufferS = bufferNameToStructName(inputBuffer);
+  const std::string &outputBufferS = bufferNameToStructName(outputBuffer);
+
+  // TODO: adjust stride based on type
+  OS << R"(
+    OpDecorate %gl_GlobalInvocationID BuiltIn GlobalInvocationId
+    OpDecorate %gl_NumWorkGroups BuiltIn NumWorkgroups
+    OpDecorate %gl_WorkGroupSize BuiltIn WorkgroupSize
+)";
+
+  for (const auto &K : Kernels) {
+    OS << "OpDecorate " << K.getTempName(inputMemTy) << " ArrayStride 16\n";
+    OS << "OpMemberDecorate " << K.getTempName(inputBufferS) << " 0 Offset 0\n";
+    OS << "OpDecorate " << K.getTempName(inputBufferS) << " BufferBlock\n";
+    OS << "OpDecorate " << K.getTempName(inputBuffer) << " DescriptorSet 0\n";
+    OS << "OpDecorate " << K.getTempName(inputBuffer) << " Binding 0\n";
+    OS << "OpDecorate " << K.getTempName(outputMemTy) << " ArrayStride 16\n";
+    OS << "OpMemberDecorate " << K.getTempName(outputBufferS)
+       << " 0 Offset 0\n";
+    OS << "OpDecorate " << K.getTempName(outputBufferS) << " BufferBlock\n";
+    OS << "OpDecorate " << K.getTempName(outputBuffer) << " DescriptorSet 0\n";
+    OS << "OpDecorate " << K.getTempName(outputBuffer) << " Binding 1\n";
+  }
 
   const auto GlobalsB = M.globals().begin();
   const auto GlobalsE = M.globals().end();
@@ -520,17 +526,8 @@ bool ReflectionPass::extractKernelSignatures(
     }
 
     const auto *FT = F.getFunctionType();
-    const auto *RT = FT->getReturnType();
-    const auto *ArgT = FT->params()[0];
-    Out.push_back(
-        {TypeToString(RT), F.getName(), TypeToString(ArgT), GetCoordsKind(F)});
+    Out.push_back(KernelSignature(FT, F.getName(), CoordsKind));
     DEBUG(Out.back().dump());
-  }
-
-  if (Out.size() != 1) {
-    // TODO: recognize non-kernel functions and don't bail out here.
-    errs() << "Unsupported number of kernels\n";
-    return false;
   }
 
   return true;
@@ -540,13 +537,14 @@ bool ReflectionPass::emitKernelTypes(const KernelSignature &Kernel) {
   DEBUG(dbgs() << "emitKernelTypes\n");
 
   const auto *RTMapping = getMappingOrPrintError(Kernel.returnType);
-  const auto *ArgTMapping = getMappingOrPrintError(Kernel.argumentType);
+  const auto *ArgTMapping = getMappingOrPrintError(Kernel.argumentTypes[0]);
 
   if (!RTMapping || !ArgTMapping)
     return false;
 
-  OS << '\n' << "%kernel_function_ty = OpTypeFunction " << RTMapping->SPIRVTy
-     << ' ' << ArgTMapping->SPIRVTy;
+  OS << '\n'
+     << Kernel.getTempName("kernel_function_ty") << " = OpTypeFunction "
+     << RTMapping->SPIRVTy << ' ' << ArgTMapping->SPIRVTy;
 
   const auto CoordsNum = unsigned(Kernel.coordsKind);
   for (size_t i = 0; i != CoordsNum; ++i)
@@ -554,55 +552,89 @@ bool ReflectionPass::emitKernelTypes(const KernelSignature &Kernel) {
 
   OS << '\n';
 
-  OS << "%ptr_function_ty = OpTypePointer Function " << RTMapping->SPIRVTy
-     << "\n";
-  OS << "%ptr_function_access_ty = OpTypePointer Function "
-     << RTMapping->SPIRVImageReadType << "\n\n";
+  OS << Kernel.getTempName("ptr_function_ty") << " = OpTypePointer Function "
+     << RTMapping->SPIRVTy << "\n";
+  OS << Kernel.getTempName("ptr_function_access_ty")
+     << " = OpTypePointer Function " << RTMapping->SPIRVImageReadType << "\n\n";
 
   return true;
 }
 
-bool ReflectionPass::emitInputImage(const KernelSignature &Kernel) {
-  DEBUG(dbgs() << "emitInputImage\n");
+std::string ReflectionPass::nextResultID() {
+  static unsigned int nextID = 0;
+  std::string str;
+  std::stringstream ss(str);
+  ss << "%res" << nextID++;
+  return ss.str();
+}
 
-  const auto *ArgTMapping = getMappingOrPrintError(Kernel.argumentType);
+std::string ReflectionPass::bufferNameToStructName(const std::string &buffer) {
+  return std::string(buffer).append("S");
+}
+
+std::string ReflectionPass::emitBuffer(const std::string &elementType,
+                                       const std::string &idBufVar,
+                                       const std::string &idArrTy) {
+  std::string arrayType = idArrTy.empty() ? nextResultID() : idArrTy;
+  std::string bufferPtrType = nextResultID();
+  std::string bufferVar = idBufVar.empty() ? nextResultID() : idBufVar;
+  std::string bufferType = bufferNameToStructName(bufferVar);
+
+  OS << arrayType << " = OpTypeRuntimeArray " << elementType << "\n";
+  OS << bufferType << " = OpTypeStruct " << arrayType << "\n";
+  OS << bufferPtrType << " = OpTypePointer Uniform " << bufferType << "\n";
+  OS << bufferVar << " = OpVariable " << bufferPtrType << " Uniform\n";
+
+  return bufferVar;
+  ;
+}
+
+std::string ReflectionPass::emitBufferUsingRSType(const std::string &type,
+                                                  const std::string &idBufVar,
+                                                  const std::string &idArrTy) {
+  const auto *ArgTMapping = getMappingOrPrintError(type);
   if (!ArgTMapping)
-    return false;
+    return std::string();
 
-  OS << "%input_image_ty = OpTypeImage " << ArgTMapping->SPIRVScalarTy
-     << " 2D 0 0 0 2 " << ArgTMapping->SPIRVImageFormat << '\n';
+  std::string bufferID = emitBuffer(ArgTMapping->SPIRVTy, idBufVar, idArrTy);
 
-  OS << "%input_image_ptr_ty = OpTypePointer UniformConstant "
-     << "%input_image_ty\n";
+  return bufferID;
+}
 
-  OS << "%input_image = OpVariable %input_image_ptr_ty UniformConstant\n";
+std::string ReflectionPass::emitInputBuffer(const KernelSignature &Kernel,
+                                            const std::string &idBufVar,
+                                            const std::string &idArrTy) {
+  DEBUG(dbgs() << __FUNCTION__ << "\n");
+  return emitBufferUsingRSType(Kernel.argumentTypes[0],
+                               Kernel.getTempName(idBufVar),
+                               Kernel.getTempName(idArrTy));
+}
 
-  return true;
+std::string ReflectionPass::emitOutputBuffer(const KernelSignature &Kernel,
+                                             const std::string &idBufVar,
+                                             const std::string &idArrTy) {
+  DEBUG(dbgs() << __FUNCTION__ << "\n");
+  return emitBufferUsingRSType(Kernel.returnType, Kernel.getTempName(idBufVar),
+                               Kernel.getTempName(idArrTy));
 }
 
 void ReflectionPass::emitGLGlobalInput() {
   DEBUG(dbgs() << "emitGLGlobalInput\n");
 
-  OS << '\n' << "%global_input_ptr_ty = OpTypePointer Input %v3uint\n"
-     << "%global_invocation_id = OpVariable %global_input_ptr_ty Input\n";
-}
-
-bool ReflectionPass::emitOutputImage(const KernelSignature &Kernel) {
-  DEBUG(dbgs() << "emitOutputImage\n");
-
-  const auto *RTMapping = getMappingOrPrintError(Kernel.returnType);
-  if (!RTMapping)
-    return false;
-
-  OS << '\n';
-  OS << "%output_image_ty = OpTypeImage " << RTMapping->SPIRVScalarTy
-     << " 2D 0 0 0 2 " << RTMapping->SPIRVImageFormat << '\n'
-     << "%output_image_ptr_ty = OpTypePointer UniformConstant "
-     << "%output_image_ty\n";
-
-  OS << "%output_image = OpVariable %output_image_ptr_ty Image\n";
-
-  return true;
+  OS << R"(
+%_ptr_Function_uint = OpTypePointer Function %uint
+%_ptr_Function_v4float = OpTypePointer Function %v4float
+%_ptr_Input_uint = OpTypePointer Input %uint
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gl_GlobalInvocationID = OpVariable %_ptr_Input_v3uint Input
+%gl_NumWorkGroups = OpVariable %_ptr_Input_v3uint Input
+%_ptr_Uniform_v4float = OpTypePointer Uniform %v4float
+%group_size_x = OpConstant %uint 1
+%group_size_y = OpConstant %uint 1
+%group_size_z = OpConstant %uint 1
+%gl_WorkGroupSize = OpConstantComposite %v3uint %group_size_x %group_size_y %group_size_z
+%global_input_ptr_ty = OpTypePointer Input %v3uint
+)";
 }
 
 bool ReflectionPass::emitRSAllocImages(
@@ -619,9 +651,11 @@ bool ReflectionPass::emitRSAllocImages(
     if (!AMapping)
       return false;
 
-    OS << '\n' << A.VarName << "_image_ty"
+    OS << '\n'
+       << A.VarName << "_image_ty"
        << " = OpTypeImage " << AMapping->SPIRVScalarTy << " 2D 0 0 0 2 "
-       << AMapping->SPIRVImageFormat << '\n' << A.VarName << "_image_ptr_ty"
+       << AMapping->SPIRVImageFormat << '\n'
+       << A.VarName << "_image_ptr_ty"
        << " = OpTypePointer UniformConstant " << A.VarName << "_image_ty\n";
 
     OS << A.VarName << "_var = OpVariable " << A.VarName
@@ -634,8 +668,9 @@ bool ReflectionPass::emitRSAllocImages(
 bool ReflectionPass::emitConstants(const KernelSignature &Kernel) {
   DEBUG(dbgs() << "emitConstants\n");
 
-  OS << "\n"
-        "%uint_zero = OpConstant %uint 0\n"
+  // TODO: The types do not seem to belong here
+  OS << "%uint_zero = OpConstant %uint 0\n"
+        "%uint_one = OpConstant %uint 1\n"
         "%float_zero = OpConstant %float 0\n";
 
   return true;
@@ -665,8 +700,9 @@ static std::string GenerateEISFun(const char *Name, const char *FType,
                                   const char *InstName) {
   std::ostringstream OS;
 
-  OS << '\n' << "%rs_linker_" << Name << " = OpFunction " << RType << " Pure "
-     << FType << '\n';
+  OS << '\n'
+     << "%rs_linker_" << Name << " = OpFunction " << RType << " Pure " << FType
+     << '\n';
 
   for (size_t i = 0, e = ArgTypes.size(); i < e; ++i)
     OS << "%param" << Name << i << " = OpFunctionParameter " << ArgTypes[i]
@@ -679,7 +715,8 @@ static std::string GenerateEISFun(const char *Name, const char *FType,
   for (size_t i = 0, e = ArgTypes.size(); i < e; ++i)
     OS << " %param" << Name << i;
 
-  OS << '\n' << "      OpReturnValue %res" << Name << "\n"
+  OS << '\n'
+     << "      OpReturnValue %res" << Name << "\n"
      << "      OpFunctionEnd\n";
 
   return OS.str();
@@ -914,90 +951,68 @@ bool ReflectionPass::emitRSAllocFunctions(
   return true;
 }
 
-bool ReflectionPass::emitMain(
+bool ReflectionPass::emitMainUsingBuffersForInputOutput(
     const KernelSignature &Kernel,
-    const SmallVectorImpl<RSAllocationInfo> &RSAllocs) {
-  DEBUG(dbgs() << "emitMain\n");
-
+    const SmallVectorImpl<RSAllocationInfo> &RSAllocs,
+    const std::string &inputBuffer, const std::string &outputBuffer) {
   const auto *RTMapping = getMappingOrPrintError(Kernel.returnType);
-  const auto *ArgTMapping = getMappingOrPrintError(Kernel.argumentType);
-
-  if (!RTMapping || !ArgTMapping)
+  if (!RTMapping) {
     return false;
-
-  OS << '\n';
-  OS << "       %main = OpFunction %void None %fun_void\n"
-        "%lablel_main = OpLabel\n"
-        "%input_pixel = OpVariable %ptr_function_access_ty Function\n"
-        "        %res = OpVariable %ptr_function_ty Function\n"
-        " %image_load = OpLoad %input_image_ty %input_image\n"
-        "%coords_load = OpLoad %v3uint %global_invocation_id\n"
-        "   %coords_x = OpCompositeExtract %uint %coords_load 0\n"
-        "   %coords_y = OpCompositeExtract %uint %coords_load 1\n"
-        "   %coords_z = OpCompositeExtract %uint %coords_load 2\n"
-        "   %shuffled = OpVectorShuffle %v2uint %coords_load %coords_load 0 1\n"
-        "  %bitcasted = OpBitcast %v2int %shuffled\n";
-
-  OS << " %image_read = OpImageRead " << ArgTMapping->SPIRVImageReadType
-     << " %image_load %bitcasted\n"
-        "               OpStore %input_pixel %image_read\n";
-
-  // TODO: Handle vector types of width different than 4.
-  if (RTMapping->isVectorTy) {
-    OS << " %input_load = OpLoad " << ArgTMapping->SPIRVTy << " %input_pixel\n";
-  } else {
-    OS << "%input_access_chain = OpAccessChain %ptr_function_ty "
-          "%input_pixel %uint_zero\n"
-       << " %input_load = OpLoad " << ArgTMapping->SPIRVTy
-       << " %input_access_chain\n";
   }
+  const auto &RetTy = RTMapping->SPIRVTy;
+
+  const auto *ArgTMapping = getMappingOrPrintError(Kernel.argumentTypes[0]);
+  if (!ArgTMapping) {
+    return false;
+  }
+  const auto &ArgTy = ArgTMapping->SPIRVTy;
+
+#define TMP(X) (Kernel.getTempName(#X))
+
+  OS << Kernel.getWrapperName() << " = OpFunction %void None %fun_void\n";
+  OS << TMP(label) << " = OpLabel\n";
+  OS << TMP(coords_load) << " = OpLoad %v3uint %gl_GlobalInvocationID\n";
+  OS << TMP(coords_x) << " = OpCompositeExtract %uint " << TMP(coords_load)
+     << " 0\n";
+  OS << TMP(coords_y) << " = OpCompositeExtract %uint " << TMP(coords_load)
+     << " 1\n";
+  OS << TMP(coords_z) << " = OpCompositeExtract %uint " << TMP(coords_load)
+     << " 2\n";
+  OS << TMP(res) << " = OpVariable " << TMP(ptr_function_ty) << " Function\n";
 
   for (const auto &A : RSAllocs)
     OS << A.VarName << "_load = OpLoad " << A.VarName << "_image_ty "
        << A.VarName << "_var\n";
 
-  OS << "%kernel_call = OpFunctionCall " << ArgTMapping->SPIRVTy
-     << " %RS_SPIRV_DUMMY_ %input_load";
+  OS << TMP(tmp1) << " = OpIMul %uint " << TMP(coords_y) << " %group_size_x\n";
+  OS << TMP(tmp2)
+     << " = OpAccessChain %_ptr_Input_uint %gl_NumWorkGroups %uint_zero\n";
+  OS << TMP(tmp3) << " = OpLoad %uint " << TMP(tmp2) << "\n";
+  OS << TMP(tmp4) << " = OpIMul %uint " << TMP(tmp1) << " " << TMP(tmp3)
+     << "\n";
+  OS << TMP(tmp5) << " = OpIAdd %uint " << TMP(tmp4) << " " << TMP(coords_x)
+     << "\n";
+  OS << TMP(tmp6) << " = OpAccessChain " << TMP(ptr_function_ty) << " "
+     << inputBuffer << " %uint_zero " << TMP(tmp5) << "\n";
+  OS << TMP(inputPixel) << " = OpLoad " << ArgTy << " " << TMP(tmp6) << "\n";
 
+  OS << TMP(tmp7) << " = OpFunctionCall " << RetTy << " %RS_SPIRV_DUMMY_ "
+     << TMP(inputPixel);
   const auto CoordsNum = size_t(Kernel.coordsKind);
   for (size_t i = 0; i != CoordsNum; ++i)
-    OS << " %coords_" << CoordsNames[i].str();
+    OS << " " << TMP(coords_) << CoordsNames[i].str();
+  OS << "\n";
 
-  OS << '\n';
-
-  OS << "               OpStore %res %kernel_call\n"
-        "%output_load = OpLoad %output_image_ty %output_image\n";
-  OS << "   %res_load = OpLoad " << RTMapping->SPIRVTy << " %res\n";
-
-  if (!RTMapping->isVectorTy) {
-    OS << "%composite_constructed = OpCompositeConstruct "
-       << RTMapping->SPIRVImageReadType;
-    for (size_t i = 0; i < RTMapping->vectorWidth; ++i)
-      OS << " %res_load";
-
-    OS << "\n"
-          "               OpImageWrite %output_load %bitcasted "
-          "%composite_constructed\n";
-
-  } else {
-    OS << "               OpImageWrite %output_load %bitcasted %res_load\n";
-  }
-
-  OS << "               OpReturn\n"
-        "               OpFunctionEnd\n";
-
-  OS << "%RS_SPIRV_DUMMY_ = OpFunction " << RTMapping->SPIRVTy
-     << " None %kernel_function_ty\n";
-
-  OS << "          %p = OpFunctionParameter " << ArgTMapping->SPIRVTy << '\n';
-
-  for (size_t i = 0; i != CoordsNum; ++i)
-    OS << "          %coords_param_" << CoordsNames[i].str()
-       << " = OpFunctionParameter %uint\n";
-
-  OS << "         %11 = OpLabel\n"
-        "               OpReturnValue %p\n"
-        "               OpFunctionEnd\n";
+  OS << "OpStore " << TMP(res) << " " << TMP(tmp7) << "\n";
+  OS << TMP(tmp8) << " = OpLoad " << RetTy << " " << TMP(res) << "\n";
+  OS << TMP(tmp9) << " = OpAccessChain " << TMP(ptr_function_ty) << " "
+     << outputBuffer << " %uint_zero " << TMP(tmp5) << "\n";
+  OS << "OpStore " << TMP(tmp9) << " " << TMP(tmp8) << "\n";
+  OS << R"(
+    OpReturn
+    OpFunctionEnd
+)";
+#undef TMP
 
   return true;
 }

@@ -270,6 +270,12 @@ void * Context::threadProc(void *vrsc) {
         rsc->mForceCpu = true;
     }
 
+    bool forceRSoV = getProp("debug.rs.rsov") != 0;
+    if (forceRSoV) {
+        ALOGD("Force the use of RSoV driver");
+        rsc->mForceRSoV = true;
+    }
+
     bool forceCpu = getProp("debug.rs.default-CPU-driver") != 0;
     if (forceCpu) {
         ALOGD("Skipping hardware driver and loading default CPU driver");
@@ -277,7 +283,10 @@ void * Context::threadProc(void *vrsc) {
     }
 
     rsc->mForceCpu |= rsc->mIsGraphicsContext;
-    rsc->loadDriver(rsc->mForceCpu);
+    if (!rsc->loadDriver(rsc->mForceCpu, rsc->mForceRSoV)) {
+      rsc->setError(RS_ERROR_DRIVER, "Failed loading driver");
+      return nullptr;
+    }
 
     if (!rsc->isSynchronous()) {
         // Due to legacy we default to normal_graphics
@@ -461,6 +470,7 @@ Context::Context() {
     memset(&watchdog, 0, sizeof(watchdog));
     memset(&mHal, 0, sizeof(mHal));
     mForceCpu = false;
+    mForceRSoV = false;
     mContextType = RS_CONTEXT_TYPE_NORMAL;
     mOptLevel = 3;
     mSynchronous = false;

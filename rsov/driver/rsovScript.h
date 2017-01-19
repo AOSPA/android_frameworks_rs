@@ -50,6 +50,10 @@ class RSoVScript : RsdCpuReference::CpuScript {
 
   virtual ~RSoVScript();
 
+  static bool isScriptCpuBacked(const Script *s);
+  static void initScriptOnCpu(Script *s, RsdCpuReference::CpuScript *cs);
+  static void initScriptOnRSoV(Script *s, RSoVScript *rsovScript);
+
   void populateScript(Script *) override;
   void invokeFunction(uint32_t slot, const void *params,
                       size_t paramLength) override;
@@ -95,15 +99,18 @@ class RSoVScript : RsdCpuReference::CpuScript {
   RsdCpuReference::CpuScript *getCpuScript() const { return mCpuScript; }
 
  private:
-  void InitDescriptorAndPipelineLayouts();
+  void InitDescriptorAndPipelineLayouts(uint32_t inLen);
   void InitShader(uint32_t slot);
   void InitDescriptorPool();
-  void InitDescriptorSet(const RSoVAllocation *inputAllocation,
+  void InitDescriptorSet(const std::vector<RSoVAllocation *> &inputAllocations,
                          RSoVAllocation *outputAllocation);
   void InitPipelineCache();
   void InitPipeline();
-  void runForEach(uint32_t slot, const RSoVAllocation *input,
+  void runForEach(uint32_t slot, uint32_t inLen,
+                  const std::vector<RSoVAllocation *> &input,
                   RSoVAllocation *output);
+
+  static constexpr int CPU_SCRIPT_MAGIC_NUMBER = 0x60000;
 
   RSoVContext *mRSoV;
   VkDevice mDevice;

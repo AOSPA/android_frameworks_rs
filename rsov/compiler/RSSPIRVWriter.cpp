@@ -33,6 +33,7 @@
 #include "InlinePreparationPass.h"
 #include "LinkerModule.h"
 #include "ReflectionPass.h"
+#include "RemoveNonkernelsPass.h"
 
 #include <fstream>
 #include <sstream>
@@ -83,7 +84,17 @@ static void HandleTargetTriple(Module &M) {
   M.setTargetTriple(NewTriple);
 }
 
-void addPassesForRS2SPIRV(llvm::legacy::PassManager &PassMgr) {
+void addPassesForRS2SPIRV(llvm::legacy::PassManager &PassMgr,
+                          bcinfo::MetadataExtractor &Extractor) {
+  PassMgr.add(createInlinePreparationPass(Extractor));
+  PassMgr.add(createAlwaysInlinerPass());
+  PassMgr.add(createRemoveNonkernelsPass(Extractor));
+  // Delete unreachable globals.
+  PassMgr.add(createGlobalDCEPass());
+  // Remove dead debug info.
+  PassMgr.add(createStripDeadDebugInfoPass());
+  // Remove dead func decls.
+  PassMgr.add(createStripDeadPrototypesPass());
   PassMgr.add(createGlobalMergePass());
   PassMgr.add(createPromoteMemoryToRegisterPass());
   PassMgr.add(createTransOCLMD());
@@ -92,7 +103,6 @@ void addPassesForRS2SPIRV(llvm::legacy::PassManager &PassMgr) {
   PassMgr.add(createSPIRVRegularizeLLVM());
   PassMgr.add(createSPIRVLowerConstExpr());
   PassMgr.add(createSPIRVLowerBool());
-  PassMgr.add(createAlwaysInlinerPass());
 }
 
 bool WriteSPIRV(Module *M, llvm::raw_ostream &OS, std::string &ErrMsg) {
@@ -108,8 +118,7 @@ bool WriteSPIRV(Module *M, llvm::raw_ostream &OS, std::string &ErrMsg) {
   DEBUG(dbgs() << "Metadata extracted\n");
 
   llvm::legacy::PassManager PassMgr;
-  PassMgr.add(createInlinePreparationPass(ME));
-  addPassesForRS2SPIRV(PassMgr);
+  addPassesForRS2SPIRV(PassMgr, ME);
 
   std::ofstream WrapperF;
   if (!WrapperOutputFile.empty()) {
@@ -287,7 +296,9 @@ bool Link(llvm::StringRef KernelFilename, llvm::StringRef WrapperFilename,
   auto MainB = MainBs.begin();
   const auto ME = MainBs.end();
 
-  for (; KernelName != KE && MainB != ME; ++KernelName, ++MainB) {
+  unsigned processed_kernels = 0;
+  for (; KernelName != KE && MainB != ME;
+       ++KernelName, ++MainB, ++processed_kernels) {
     // Remove the leading "%" character in kernel names
     const std::string KernelNameStr = Prefix + KernelName->substr(1);
     DEBUG(dbgs() << "Kernel name: " << KernelNameStr << '\n');
@@ -298,7 +309,17 @@ bool Link(llvm::StringRef KernelFilename, llvm::StringRef WrapperFilename,
   }
 
   if (KernelName != KE || MainB != ME) {
-    errs() << "Inconsistent kernel metadata and definitions\n";
+    errs() << "Inconsistent kernel metadata and definitions";
+    if (MainB != ME) {
+      // At this point, the linker has walked thru all kernels provided
+      // by wrapper's header in the %RS_KERNELS
+      // but there are still unprocessed function blocks in wrapper.
+      errs() << ": not all " << MainBs.size()
+             << " wrapper function(s) linked to kernels; linked: "
+             << processed_kernels;
+    }
+    errs() << "\n";
+
     return false;
   }
 
@@ -402,7 +423,7 @@ bool InlineFunctionCalls(LinkerModule &LM, MainFunBlock &MB) {
     });
 
     if (Callee.size() != 1) {
-      errs() << "Callee not found\n";
+      errs() << "Callee not found: " << FInfo.FName << "\n";
       return false;
     }
 

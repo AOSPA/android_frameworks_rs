@@ -1,5 +1,5 @@
 /*
- * Copyright 2016, The Android Open Source Project
+ * Copyright 2017, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,26 +14,26 @@
  * limitations under the License.
  */
 
-#ifndef RS_SPIRV_REFLECTION_PASS_H
-#define RS_SPIRV_REFLECTION_PASS_H
+#ifndef STL_UTIL_H
+#define STL_UTIL_H
 
-#include "llvm/ADT/StringRef.h"
+namespace android {
+namespace spirit {
 
-#include <iosfwd>
+template <class T> class ContainerDeleter {
+public:
+  ContainerDeleter(T &container) : mContainer(container) {}
+  ~ContainerDeleter() {
+    for (auto *ptr : mContainer) {
+      delete ptr;
+    }
+  }
 
-namespace llvm {
-class ModulePass;
-} // namespace llvm
+private:
+  T &mContainer;
+};
 
-namespace bcinfo {
-class MetadataExtractor;
-} // namespace bcinfo
+} // namespace spirit
+} // namespace android
 
-namespace rs2spirv {
-
-llvm::ModulePass *createReflectionPass(std::ostream &OS,
-                                       bcinfo::MetadataExtractor &ME);
-
-} // namespace rs2spirv
-
-#endif
+#endif // STL_UTIL_H

@@ -23,12 +23,10 @@
 
 #include "../cpu_ref/rsd_cpu.h"
 
-#ifndef RS_SERVER
 #include <GLES/gl.h>
 #include <GLES2/gl2.h>
-#endif
 
-#if !defined(RS_SERVER) && !defined(RS_COMPATIBILITY_LIB)
+#ifndef RS_COMPATIBILITY_LIB
 #include "gui/GLConsumer.h"
 #endif
 
@@ -55,15 +53,14 @@ struct DrvAllocation {
     GLenum glType;
     GLenum glFormat;
 
-    ANativeWindowBuffer *wndBuffer;
     android::GLConsumer *surfaceTexture;
 #else
     int glTarget;
     int glType;
     int glFormat;
+#endif
 
     ANativeWindow_Buffer *wndBuffer;
-#endif
 
     bool useUserProvidedPtr;
     bool uploadDeferred;

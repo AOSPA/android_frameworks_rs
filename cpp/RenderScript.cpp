@@ -25,12 +25,6 @@
 #include <dlfcn.h>
 #include <unistd.h>
 
-#if !defined(RS_SERVER) && !defined(RS_COMPATIBILITY_LIB) && defined(__ANDROID__)
-#include <cutils/properties.h>
-#else
-#include "rsCompatibilityLib.h"
-#endif
-
 using android::RSC::RS;
 using android::RSC::RSError;
 
@@ -90,9 +84,9 @@ static bool loadSO(const char* filename, int targetApi) {
 }
 
 static uint32_t getProp(const char *str) {
-#if !defined(__LP64__) && !defined(RS_SERVER) && defined(__ANDROID__)
+#if !defined(__LP64__) && defined(__ANDROID__)
     char buf[256];
-    property_get(str, buf, "0");
+    android::renderscript::property_get(str, buf, "0");
     return atoi(buf);
 #else
     return 0;

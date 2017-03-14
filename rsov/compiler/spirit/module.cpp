@@ -214,6 +214,14 @@ Module *Module::addSourceExtension(const char *ext) {
   return this;
 }
 
+Module *Module::addString(const char *str) {
+  if (!mDebugInfo) {
+    mDebugInfo.reset(mBuilder->MakeDebugInfoSection());
+  }
+  mDebugInfo->addString(str);
+  return this;
+}
+
 Module *Module::addEntryPoint(EntryPointDefinition *entry) {
   mEntryPoints.push_back(entry);
   auto newModes = entry->getExecutionModes();
@@ -411,12 +419,12 @@ Module *Module::addVariable(VariableInst *var) {
 }
 
 void Module::consolidateAnnotations() {
-  std::set<Instruction *> annotations(mAnnotations->begin(),
+  std::vector<Instruction *> annotations(mAnnotations->begin(),
                                       mAnnotations->end());
   std::unique_ptr<IVisitor> v(
       CreateInstructionVisitor([&annotations](Instruction *inst) -> void {
         const auto &ann = inst->getAnnotations();
-        annotations.insert(ann.begin(), ann.end());
+        annotations.insert(annotations.end(), ann.begin(), ann.end());
       }));
   v->visit(this);
   mAnnotations->clear();
@@ -515,11 +523,17 @@ DebugInfoSection *DebugInfoSection::addSourceExtension(const char *ext) {
   return this;
 }
 
+DebugInfoSection *DebugInfoSection::addString(const char *str) {
+  StringInst *source = mBuilder->MakeString(str);
+  mSources.push_back(source);
+  return this;
+}
+
 Instruction *DebugInfoSection::lookupByName(const char *name) const {
   for (auto inst : mNames) {
     if (inst->getOpCode() == OpName) {
       NameInst *nameInst = static_cast<NameInst *>(inst);
-      if (strcmp(nameInst->mOperand2, name) == 0) {
+      if (nameInst->mOperand2.compare(name) == 0) {
         return nameInst->mOperand1.mInstruction;
       }
     }
@@ -534,7 +548,7 @@ DebugInfoSection::lookupNameByInstruction(const Instruction *target) const {
     if (inst->getOpCode() == OpName) {
       NameInst *nameInst = static_cast<NameInst *>(inst);
       if (nameInst->mOperand1.mInstruction == target) {
-        return nameInst->mOperand2;
+        return nameInst->mOperand2.c_str();
       }
     }
     // Ignore member names
@@ -684,12 +698,8 @@ GlobalSection::getConstantComposite(TypeVectorInst *type,
 
 TypeVoidInst *GlobalSection::getVoidType() {
   return findOrCreate<TypeVoidInst>(
-      [=](TypeVoidInst *) -> bool {
-        return true;
-      },
-      [=]() -> TypeVoidInst * {
-        return mBuilder->MakeTypeVoid();
-      },
+      [=](TypeVoidInst *) -> bool { return true; },
+      [=]() -> TypeVoidInst * { return mBuilder->MakeTypeVoid(); },
       &mGlobalDefs);
 }
 
@@ -698,14 +708,14 @@ TypeIntInst *GlobalSection::getIntType(int bits, bool isSigned) {
     switch (bits) {
 #define HANDLE_INT_SIZE(INT_TYPE, BITS, SIGNED)                                \
   case BITS: {                                                                 \
-    return findOrCreate<TypeIntInst>(                                   \
-      [=](TypeIntInst *intTy) -> bool {\
-        return intTy->mOperand1 == BITS && intTy->mOperand2 == SIGNED;  \
-      },                                                                \
-      [=]() -> TypeIntInst * {                                       \
-        return mBuilder->MakeTypeInt(BITS, SIGNED);                     \
-      },                                                                \
-      &mGlobalDefs);                                                    \
+    return findOrCreate<TypeIntInst>(                                          \
+        [=](TypeIntInst *intTy) -> bool {                                      \
+          return intTy->mOperand1 == BITS && intTy->mOperand2 == SIGNED;       \
+        },                                                                     \
+        [=]() -> TypeIntInst * {                                               \
+          return mBuilder->MakeTypeInt(BITS, SIGNED);                          \
+        },                                                                     \
+        &mGlobalDefs);                                                         \
   }
       HANDLE_INT_SIZE(Int, 8, 1);
       HANDLE_INT_SIZE(Int, 16, 1);
@@ -732,14 +742,12 @@ TypeFloatInst *GlobalSection::getFloatType(int bits) {
   switch (bits) {
 #define HANDLE_FLOAT_SIZE(BITS)                                                \
   case BITS: {                                                                 \
-    return findOrCreate<TypeFloatInst>(                                   \
-      [=](TypeFloatInst *floatTy) -> bool {\
-        return floatTy->mOperand1 == BITS;  \
-      },                                                                \
-      [=]() -> TypeFloatInst * {                                       \
-        return mBuilder->MakeTypeFloat(BITS);                     \
-      },                                                                \
-      &mGlobalDefs);                                                    \
+    return findOrCreate<TypeFloatInst>(                                        \
+        [=](TypeFloatInst *floatTy) -> bool {                                  \
+          return floatTy->mOperand1 == BITS;                                   \
+        },                                                                     \
+        [=]() -> TypeFloatInst * { return mBuilder->MakeTypeFloat(BITS); },    \
+        &mGlobalDefs);                                                         \
   }
     HANDLE_FLOAT_SIZE(16);
     HANDLE_FLOAT_SIZE(32);

@@ -26,14 +26,9 @@
 #include "rsScriptGroup.h"
 #include "rsSampler.h"
 
-#if !defined(RS_SERVER) && !defined(RS_COMPATIBILITY_LIB)
-#define ATRACE_TAG ATRACE_TAG_RS
-#include "utils/Trace.h"
-#else
 #define ATRACE_ENABLED(...) false
 #define ATRACE_NAME(...)
 #define ATRACE_CALL(...)
-#endif
 
 #ifndef RS_COMPATIBILITY_LIB
 #include "rsFont.h"
@@ -44,13 +39,6 @@
 #include "rsFBOCache.h"
 
 #endif
-
-/*
- * This is a pointer to the gDebuggerPresent global from libRS.so. The
- * debugger will use this to signal that it is attached, and thus the
- * driver can wait appropriately.
-*/
-extern int *gInternalDebuggerPresent;
 
 // ---------------------------------------------------------------------------
 namespace android {
@@ -342,7 +330,6 @@ protected:
 private:
     Context();
     bool initContext(Device *, const RsSurfaceConfig *sc);
-    void waitForDebugger();
     bool mSynchronous;
     bool initGLThread();
     void deinitEGL();

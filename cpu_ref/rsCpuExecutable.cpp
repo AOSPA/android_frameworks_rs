@@ -5,15 +5,17 @@
 #include <set>
 #include <memory>
 
+#include <sys/stat.h>
+
 #ifdef RS_COMPATIBILITY_LIB
 #include <stdio.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #else
 #include "bcc/Config.h"
 #endif
 
 #include <dlfcn.h>
+#include <sys/stat.h>
 
 namespace android {
 namespace renderscript {
@@ -59,7 +61,6 @@ static int copyFile(const char *dstFile, const char *srcFile) {
 
 static std::string findSharedObjectName(const char *cacheDir,
                                         const char *resName) {
-#ifndef RS_SERVER
     std::string scriptSOName(cacheDir);
 #if defined(RS_COMPATIBILITY_LIB) && !defined(__LP64__)
     size_t cutPos = scriptSOName.rfind("cache");
@@ -72,10 +73,6 @@ static std::string findSharedObjectName(const char *cacheDir,
 #else
     scriptSOName.append("/librs.");
 #endif // RS_COMPATIBILITY_LIB
-
-#else
-    std::string scriptSOName("lib");
-#endif // RS_SERVER
     scriptSOName.append(resName);
     scriptSOName.append(".so");
 

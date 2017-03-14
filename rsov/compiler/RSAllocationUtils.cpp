@@ -16,15 +16,16 @@
 
 #include "RSAllocationUtils.h"
 
-#include "cxxabi.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Utils/Cloning.h"
 
-#include <algorithm>
+#include "cxxabi.h"
+
 #include <sstream>
 #include <unordered_map>
 
@@ -106,19 +107,36 @@ bool getRSAllocAccesses(SmallVectorImpl<RSAllocationInfo> &Allocs,
         if (auto *F = FCall->getCalledFunction()) {
           const auto FName = F->getName();
           DEBUG(dbgs() << "Discovered function call to : " << FName << '\n');
+          // Treat memcpy as moves for the purpose of this analysis
+          if (FName.startswith("llvm.memcpy")) {
+            assert(FCall->getNumArgOperands() > 0);
+            Value *CopyDest = FCall->getArgOperand(0);
+            // We are interested in the users of the dest operand of
+            // memcpy here
+            Value *LocalCopy = CopyDest->stripPointerCasts();
+            User *NewU = dyn_cast<User>(LocalCopy);
+            assert(NewU);
+            WorkList.push_back(NewU);
+            continue;
+          }
 
-          char *demangled = __cxxabiv1::__cxa_demangle(FName.str().c_str(), nullptr, nullptr, nullptr);
+          char *demangled = __cxxabiv1::__cxa_demangle(
+              FName.str().c_str(), nullptr, nullptr, nullptr);
+          if (!demangled)
+            continue;
           const StringRef DemangledNameRef(demangled);
           DEBUG(dbgs() << "Demangled name: " << DemangledNameRef << '\n');
 
           const StringRef GEAPrefix = "rsGetElementAt_";
           const StringRef SEAPrefix = "rsSetElementAt_";
+          const StringRef DIMXPrefix = "rsAllocationGetDimX";
           assert(GEAPrefix.size() == SEAPrefix.size());
 
           const bool IsGEA = DemangledNameRef.startswith(GEAPrefix);
           const bool IsSEA = DemangledNameRef.startswith(SEAPrefix);
+          const bool IsDIMX = DemangledNameRef.startswith(DIMXPrefix);
 
-          assert(!IsGEA || !IsSEA);
+          assert(IsGEA || IsSEA || IsDIMX);
 
           if (IsGEA || IsSEA) {
             DEBUG(dbgs() << "Found rsAlloc function!\n");
@@ -136,6 +154,10 @@ bool getRSAllocAccesses(SmallVectorImpl<RSAllocationInfo> &Allocs,
             errs() << "Untyped accesses to global rs_allocations are not "
                       "supported.\n";
             return false;
+          } else if (IsDIMX) {
+            DEBUG(dbgs() << "Found rsAllocationGetDimX function!\n");
+            const auto Kind = RSAllocAccessKind::DIMX;
+            Calls.push_back({A, FCall, Kind, ""});
           }
         }
       }
@@ -169,21 +191,27 @@ bool getRSAllocAccesses(SmallVectorImpl<RSAllocationInfo> &Allocs,
 }
 
 bool solidifyRSAllocAccess(Module &M, RSAllocationCallInfo CallInfo) {
-  DEBUG(dbgs() << "\tsolidifyRSAllocAccess " << CallInfo.RSAlloc.VarName
-               << '\n');
+  DEBUG(dbgs() << "solidifyRSAllocAccess " << CallInfo.RSAlloc.VarName << '\n');
   auto *FCall = CallInfo.FCall;
   auto *Fun = FCall->getCalledFunction();
   assert(Fun);
 
-  const auto FName = Fun->getName();
+  StringRef FName;
+  if (CallInfo.Kind == RSAllocAccessKind::DIMX)
+    FName = "rsAllocationGetDimX";
+  else
+    FName = Fun->getName();
 
-  StringRef GVName = CallInfo.RSAlloc.VarName;
   std::ostringstream OSS;
-  OSS << "RS_" << GVName.drop_front().str() << FName.str();
+  OSS << "__rsov_" << FName.str();
+  // Make up uint32_t F(uint32_t)
+  Type *UInt32Ty = IntegerType::get(M.getContext(), 32);
+  auto *NewFT = FunctionType::get(UInt32Ty, ArrayRef<Type *>(UInt32Ty), false);
 
-  auto *NewF = Function::Create(Fun->getFunctionType(),
+  auto *NewF = Function::Create(NewFT, // Fun->getFunctionType(),
                                 Function::ExternalLinkage, OSS.str(), &M);
   FCall->setCalledFunction(NewF);
+  FCall->setArgOperand(0, ConstantInt::get(UInt32Ty, 0, false));
   NewF->setAttributes(Fun->getAttributes());
 
   DEBUG(M.dump());

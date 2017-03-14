@@ -16,10 +16,6 @@
 
 #include "RSSPIRVWriter.h"
 
-#include "SPIRVModule.h"
-#include "bcinfo/MetadataExtractor.h"
-
-#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
@@ -28,29 +24,25 @@
 #include "llvm/Support/SPIRV.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO.h"
+#include "llvm/Transforms/Scalar.h"
 
+#include "Builtin.h"
+#include "GlobalAllocPass.h"
+#include "GlobalAllocSPIRITPass.h"
 #include "GlobalMergePass.h"
 #include "InlinePreparationPass.h"
 #include "RemoveNonkernelsPass.h"
+#include "SPIRVModule.h"
 #include "Wrapper.h"
-
-#include <fstream>
-#include <sstream>
+#include "bcinfo/MetadataExtractor.h"
+#include "pass_queue.h"
 
 #define DEBUG_TYPE "rs2spirv-writer"
 
 using namespace llvm;
 using namespace SPIRV;
 
-namespace llvm {
-FunctionPass *createPromoteMemoryToRegisterPass();
-} // namespace llvm
-
 namespace rs2spirv {
-
-static cl::opt<std::string> WrapperOutputFile("wo",
-                                              cl::desc("Wrapper output file"),
-                                              cl::value_desc("filename.spt"));
 
 static void HandleTargetTriple(llvm::Module &M) {
   Triple TT(M.getTargetTriple());
@@ -88,6 +80,13 @@ void addPassesForRS2SPIRV(llvm::legacy::PassManager &PassMgr,
   // Remove dead func decls.
   PassMgr.add(createStripDeadPrototypesPass());
   PassMgr.add(createGlobalMergePass());
+  // Transform global allocations and accessors (rs[GS]etElementAt)
+  PassMgr.add(createGlobalAllocPass());
+  // Removed dead MemCpys in 64-bit targets after global alloc pass
+  PassMgr.add(createDeadStoreEliminationPass());
+  PassMgr.add(createAggressiveDCEPass());
+  // Delete unreachable globals (after removing global allocations)
+  PassMgr.add(createRemoveAllGlobalAllocPass());
   PassMgr.add(createPromoteMemoryToRegisterPass());
   PassMgr.add(createTransOCLMD());
   // TODO: investigate removal of OCLTypeToSPIRV pass.
@@ -129,8 +128,13 @@ bool WriteSPIRV(llvm::Module *M, llvm::raw_ostream &OS, std::string &ErrMsg) {
 
   memcpy(words.data(), str.data(), str.size());
 
+  android::spirit::PassQueue spiritPasses;
+  spiritPasses.append(CreateWrapperPass(ME, *M));
+  spiritPasses.append(CreateBuiltinPass());
+  spiritPasses.append(CreateGAPass());
+
   int error;
-  auto wordsOut = AddGLComputeWrappers(words, ME, *M, &error);
+  auto wordsOut = spiritPasses.run(words, &error);
 
   if (error != 0) {
     OS << *BM;

@@ -36,22 +36,8 @@
 #include <inttypes.h>
 #include <unistd.h>
 
-#if !defined(RS_SERVER) && !defined(RS_COMPATIBILITY_LIB) && \
-        defined(__ANDROID__)
-#include <cutils/properties.h>
-#endif
-
 #ifdef RS_COMPATIBILITY_LIB
 #include "rsCompatibilityLib.h"
-#endif
-
-int *gInternalDebuggerPresent = nullptr;
-
-#ifdef RS_SERVER
-// Android exposes gettid(), standard Linux does not
-static pid_t gettid() {
-    return syscall(SYS_gettid);
-}
 #endif
 
 namespace android {
@@ -215,7 +201,7 @@ void Context::setupProgramStore() {
 #endif
 
 static uint32_t getProp(const char *str) {
-#if !defined(RS_SERVER) && defined(__ANDROID__)
+#ifdef __ANDROID__
     char buf[PROPERTY_VALUE_MAX];
     property_get(str, buf, "0");
     return atoi(buf);
@@ -494,14 +480,6 @@ void Context::setCacheDir(const char * cacheDir_arg, uint32_t length) {
     }
 }
 
-void Context::waitForDebugger() {
-    // Wait until this symbol has been properly set up, and the flag itself is
-    // set to a non-zero value.
-    while (!gInternalDebuggerPresent || !*gInternalDebuggerPresent) {
-        sleep(0);
-    }
-}
-
 Context * Context::createContext(Device *dev, const RsSurfaceConfig *sc,
                                  RsContextType ct, uint32_t flags) {
     Context * rsc = new Context();
@@ -520,10 +498,6 @@ Context * Context::createContext(Device *dev, const RsSurfaceConfig *sc,
         return nullptr;
     }
 
-    if (flags & RS_CONTEXT_WAIT_FOR_ATTACH) {
-        rsc->waitForDebugger();
-    }
-
     return rsc;
 }
 
@@ -539,8 +513,6 @@ bool Context::initContext(Device *dev, const RsSurfaceConfig *sc) {
     mIO.init();
     mIO.setTimeoutCallback(printWatchdogInfo, this, 2e9);
 
-    dev->addContext(this);
-    mDev = dev;
     if (sc) {
         mUserSurfaceConfig = *sc;
     } else {
@@ -608,16 +580,7 @@ Context::~Context() {
         if (mHal.funcs.shutdownDriver && mHal.drv) {
             mHal.funcs.shutdownDriver(this);
         }
-
-        // Global structure cleanup.
-        pthread_mutex_lock(&gInitMutex);
-        if (mDev) {
-            mDev->removeContext(this);
-        }
-        pthread_mutex_unlock(&gInitMutex);
     }
-
-    delete mDev;
 }
 
 #ifndef RS_COMPATIBILITY_LIB

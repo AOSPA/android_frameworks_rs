@@ -25,9 +25,10 @@ RS2SPRIV_DEVICE_BUILD ?= true
 RS2SPIRV_SOURCES := \
   rs2spirv.cpp \
   Builtin.cpp \
+  GlobalAllocPass.cpp \
+  GlobalAllocSPIRITPass.cpp \
   GlobalMergePass.cpp \
   InlinePreparationPass.cpp \
-  KernelSignature.cpp \
   RemoveNonkernelsPass.cpp \
   RSAllocationUtils.cpp \
   RSSPIRVWriter.cpp \
@@ -50,6 +51,7 @@ include $(CLEAR_TBLGEN_VARS)
 
 LOCAL_SRC_FILES := \
   Builtin.cpp \
+  GlobalAllocSPIRITPass.cpp \
   RSAllocationUtils.cpp \
   Wrapper.cpp \
   Wrapper_test.cpp \

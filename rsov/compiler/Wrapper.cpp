@@ -16,16 +16,21 @@
 
 #include "Wrapper.h"
 
+#include "llvm/IR/Module.h"
+
 #include "Builtin.h"
+#include "GlobalAllocSPIRITPass.h"
 #include "RSAllocationUtils.h"
 #include "bcinfo/MetadataExtractor.h"
 #include "builder.h"
 #include "instructions.h"
 #include "module.h"
-#include "word_stream.h"
-#include "llvm/IR/Module.h"
+#include "pass.h"
+
+#include <vector>
 
 using bcinfo::MetadataExtractor;
+
 namespace android {
 namespace spirit {
 
@@ -311,8 +316,6 @@ void AddHeader(Module *m) {
   // m->addCapability(Capability::Addresses);
   m->setMemoryModel(AddressingModel::Physical32, MemoryModel::GLSL450);
 
-  m->addExtInstImport("GLSL.std.450");
-
   m->addSource(SourceLanguage::GLSL, 450);
   m->addSourceExtension("GL_ARB_separate_shader_objects");
   m->addSourceExtension("GL_ARB_shading_language_420pack");
@@ -349,45 +352,18 @@ void FixGlobalStorageClass(Module *m) {
 
 } // anonymous namespace
 
-} // namespace spirit
-} // namespace android
-
-using android::spirit::AddHeader;
-using android::spirit::AddWrapper;
-using android::spirit::DecorateGlobalBuffer;
-using android::spirit::InputWordStream;
-using android::spirit::FixGlobalStorageClass;
-
-namespace rs2spirv {
-
-std::vector<uint32_t>
-AddGLComputeWrappers(const std::vector<uint32_t> &kernel_spirv,
-                     const bcinfo::MetadataExtractor &metadata,
-                     llvm::Module &LM, int *error) {
-  std::unique_ptr<InputWordStream> IS(
-      InputWordStream::Create(std::move(kernel_spirv)));
-  std::unique_ptr<android::spirit::Module> m(
-      android::spirit::Deserialize<android::spirit::Module>(*IS));
-
-  if (!m) {
-    *error = -1;
-    return std::vector<uint32_t>();
-  }
-
-  if (!m->resolveIds()) {
-    *error = -2;
-    return std::vector<uint32_t>();
-  }
-
+bool AddWrappers(const bcinfo::MetadataExtractor &metadata,
+                 llvm::Module &LM,
+                 android::spirit::Module *m) {
   android::spirit::Builder b;
 
   m->setBuilder(&b);
 
-  FixGlobalStorageClass(m.get());
+  FixGlobalStorageClass(m);
 
-  AddHeader(m.get());
+  AddHeader(m);
 
-  DecorateGlobalBuffer(LM, b, m.get());
+  DecorateGlobalBuffer(LM, b, m);
 
   const size_t numKernel = metadata.getExportForEachSignatureCount();
   const char **kernelName = metadata.getExportForEachNameList();
@@ -396,16 +372,43 @@ AddGLComputeWrappers(const std::vector<uint32_t> &kernel_spirv,
 
   for (size_t i = 0; i < numKernel; i++) {
     bool success =
-        AddWrapper(kernelName[i], kernelSigature[i], inputCount[i], b, m.get());
+        AddWrapper(kernelName[i], kernelSigature[i], inputCount[i], b, m);
     if (!success) {
-      *error = -3;
-      return std::vector<uint32_t>();
+      return false;
     }
   }
 
   m->consolidateAnnotations();
+  return true;
+}
 
-  return rs2spirv::TranslateBuiltins(b, m.get(), error);
+class WrapperPass : public Pass {
+public:
+  WrapperPass(const bcinfo::MetadataExtractor &Metadata,
+              const llvm::Module &LM) : mLLVMMetadata(Metadata),
+                                        mLLVMModule(const_cast<llvm::Module&>(LM)) {}
+
+  Module *run(Module *m, int *error) override {
+    bool success = AddWrappers(mLLVMMetadata, mLLVMModule, m);
+    if (error) {
+      *error = success ? 0 : -1;
+    }
+    return m;
+  }
+
+private:
+  const bcinfo::MetadataExtractor &mLLVMMetadata;
+  llvm::Module &mLLVMModule;
+};
+
+} // namespace spirit
+} // namespace android
+
+namespace rs2spirv {
+
+android::spirit::Pass* CreateWrapperPass(const bcinfo::MetadataExtractor &metadata,
+                                         const llvm::Module &LLVMModule) {
+  return new android::spirit::WrapperPass(metadata, LLVMModule);
 }
 
 } // namespace rs2spirv

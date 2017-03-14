@@ -22,8 +22,6 @@
 #include <sys/resource.h>
 #include <sched.h>
 
-#include <cutils/properties.h>
-
 #include <GLES/gl.h>
 #include <GLES/glext.h>
 #include <GLES2/gl2.h>
@@ -209,12 +207,6 @@ void getConfigData(const Context *rsc,
     if (rsc->mUserSurfaceConfig.depthMin > 0) {
         configAttribsPtr[0] = EGL_DEPTH_SIZE;
         configAttribsPtr[1] = rsc->mUserSurfaceConfig.depthMin;
-        configAttribsPtr += 2;
-    }
-
-    if (rsc->mDev->mForceSW) {
-        configAttribsPtr[0] = EGL_CONFIG_CAVEAT;
-        configAttribsPtr[1] = EGL_SLOW_CONFIG;
         configAttribsPtr += 2;
     }
 

@@ -14,20 +14,19 @@
  * limitations under the License.
  */
 
+#include "instructions.h"
+
+#include "gtest/gtest.h"
+
 #include <memory>
 #include <vector>
-
-#include "instructions.h"
-#include "word_stream.h"
-#include "gtest/gtest.h"
 
 namespace android {
 namespace spirit {
 
 TEST(InstructionTest, testOpCapability) {
   std::vector<uint32_t> words = {0x00020011, 0x00000001};
-  std::unique_ptr<InputWordStream> IS(InputWordStream::Create(words));
-  auto *i = Deserialize<CapabilityInst>(*IS);
+  auto *i = Deserialize<CapabilityInst>(words);
   EXPECT_NE(nullptr, i);
 }
 
@@ -36,10 +35,9 @@ TEST(InstructionTest, testOpExtension) {
                      0x43, 0x44, 0x45, 0x46, 'G',  0x00};
   std::vector<uint32_t> words((uint32_t *)bytes,
                               (uint32_t *)(bytes + sizeof(bytes)));
-  std::unique_ptr<InputWordStream> IS(InputWordStream::Create(words));
-  auto *i = Deserialize<ExtensionInst>(*IS);
+  auto *i = Deserialize<ExtensionInst>(words);
   ASSERT_NE(nullptr, i);
-  EXPECT_STREQ("ABCDEFG", i->mOperand1);
+  EXPECT_STREQ("ABCDEFG", i->mOperand1.c_str());
 }
 
 TEST(InstructionTest, testOpExtInstImport) {
@@ -48,10 +46,9 @@ TEST(InstructionTest, testOpExtInstImport) {
                      0x2e, 0x34, 0x35, 0x30, 0x00, 0x00, 0x00, 0x00};
   std::vector<uint32_t> words((uint32_t *)bytes,
                               (uint32_t *)(bytes + sizeof(bytes)));
-  std::unique_ptr<InputWordStream> IS(InputWordStream::Create(words));
-  auto *i = Deserialize<ExtInstImportInst>(*IS);
+  auto *i = Deserialize<ExtInstImportInst>(words);
   ASSERT_NE(nullptr, i);
-  EXPECT_STREQ("GLSL.std.450", i->mOperand1);
+  EXPECT_STREQ("GLSL.std.450", i->mOperand1.c_str());
 }
 
 } // namespace spirit

@@ -14,16 +14,10 @@
  * limitations under the License.
  */
 
-#include "rsdCore.h"
 #include "rsdAllocation.h"
+#include "rsdCore.h"
 
-#include "rsAllocation.h"
-
-#if !defined(RS_SERVER) && !defined(RS_COMPATIBILITY_LIB)
-#include "system/window.h"
-#include "ui/Rect.h"
-#include "ui/GraphicBufferMapper.h"
-#endif
+#include <android/native_window.h>
 
 #ifdef RS_COMPATIBILITY_LIB
 #include "rsCompatibilityLib.h"
@@ -37,17 +31,6 @@
 #include <GLES/gl.h>
 #include <GLES2/gl2.h>
 #include <GLES/glext.h>
-#endif
-
-#ifdef RS_SERVER
-// server requires malloc.h for memalign
-#include <malloc.h>
-#endif
-
-#ifndef RS_COMPATIBILITY_LIB
-using android::GraphicBufferMapper;
-using android::PIXEL_FORMAT_RGBA_8888;
-using android::Rect;
 #endif
 
 using android::renderscript::Allocation;
@@ -285,7 +268,6 @@ static size_t DeriveYUVLayout(int yuv, Allocation::Hal::DrvState *state) {
     state->yuv.step = 1;
     state->lodCount = 3;
 
-#ifndef RS_SERVER
     switch(yuv) {
     case HAL_PIXEL_FORMAT_YV12:
         state->lod[2].stride = rsRound(state->lod[0].stride >> 1, 16);
@@ -311,7 +293,6 @@ static size_t DeriveYUVLayout(int yuv, Allocation::Hal::DrvState *state) {
     default:
         rsAssert(0);
     }
-#endif
     return uvSize;
 }
 
@@ -467,7 +448,6 @@ bool rsdAllocationInitStrided(const Context *rsc, Allocation *alloc, bool forceZ
         rsAssert(!"Size mismatch");
     }
 
-#ifndef RS_SERVER
     drv->glTarget = GL_NONE;
     if (alloc->mHal.state.usageFlags & RS_ALLOCATION_USAGE_GRAPHICS_TEXTURE) {
         if (alloc->mHal.state.hasFaces) {
@@ -480,7 +460,6 @@ bool rsdAllocationInitStrided(const Context *rsc, Allocation *alloc, bool forceZ
             drv->glTarget = GL_ARRAY_BUFFER;
         }
     }
-#endif
 
 #ifndef RS_COMPATIBILITY_LIB
     drv->glType = rsdTypeToGLType(alloc->mHal.state.type->getElement()->getComponent().getType());
@@ -591,17 +570,13 @@ void rsdAllocationDestroy(const Context *rsc, Allocation *alloc) {
 
         if ((alloc->mHal.state.usageFlags & RS_ALLOCATION_USAGE_IO_OUTPUT) &&
             (alloc->mHal.state.usageFlags & RS_ALLOCATION_USAGE_SCRIPT)) {
-
-            DrvAllocation *drv = (DrvAllocation *)alloc->mHal.drv;
             ANativeWindow *nw = drv->wndSurface;
             if (nw) {
-                GraphicBufferMapper &mapper = GraphicBufferMapper::get();
-                mapper.unlock(drv->wndBuffer->handle);
-                int32_t r = nw->cancelBuffer(nw, drv->wndBuffer, -1);
-
+                //If we have an attached surface, need to release it.
+                ANativeWindow_unlockAndPost(nw);
+                ANativeWindow_release(nw);
                 drv->wndSurface = nullptr;
-                native_window_api_disconnect(nw, NATIVE_WINDOW_API_CPU);
-                nw->decStrong(nullptr);
+                delete drv->wndBuffer;
             }
         }
 #endif
@@ -726,21 +701,17 @@ void rsdAllocationMarkDirty(const Context *rsc, const Allocation *alloc) {
 #ifndef RS_COMPATIBILITY_LIB
 static bool IoGetBuffer(const Context *rsc, Allocation *alloc, ANativeWindow *nw) {
     DrvAllocation *drv = (DrvAllocation *)alloc->mHal.drv;
-
-    int32_t r = native_window_dequeue_buffer_and_wait(nw, &drv->wndBuffer);
+    // Must lock the whole surface
+    if(drv->wndBuffer == nullptr) {
+        drv->wndBuffer = new ANativeWindow_Buffer;
+    }
+    int32_t r = ANativeWindow_lock(nw, drv->wndBuffer, NULL);
     if (r) {
-        rsc->setError(RS_ERROR_DRIVER, "Error getting next IO output buffer.");
+        rsc->setError(RS_ERROR_DRIVER, "Error Locking IO output buffer.");
         return false;
     }
 
-    // Must lock the whole surface
-    GraphicBufferMapper &mapper = GraphicBufferMapper::get();
-    Rect bounds(drv->wndBuffer->width, drv->wndBuffer->height);
-
-    void *dst = nullptr;
-    mapper.lock(drv->wndBuffer->handle,
-            GRALLOC_USAGE_SW_READ_NEVER | GRALLOC_USAGE_SW_WRITE_OFTEN,
-            bounds, &dst);
+    void *dst = drv->wndBuffer->bits;
     alloc->mHal.drvState.lod[0].mallocPtr = dst;
     alloc->mHal.drvState.lod[0].stride = drv->wndBuffer->stride * alloc->mHal.state.elementSizeBytes;
     rsAssert((alloc->mHal.drvState.lod[0].stride & 0xf) == 0);
@@ -752,75 +723,23 @@ static bool IoGetBuffer(const Context *rsc, Allocation *alloc, ANativeWindow *nw
 void rsdAllocationSetSurface(const Context *rsc, Allocation *alloc, ANativeWindow *nw) {
 #ifndef RS_COMPATIBILITY_LIB
     DrvAllocation *drv = (DrvAllocation *)alloc->mHal.drv;
-    ANativeWindow *old = drv->wndSurface;
-
-    if (nw) {
-        nw->incStrong(nullptr);
-    }
-
-    if (alloc->mHal.state.usageFlags & RS_ALLOCATION_USAGE_GRAPHICS_RENDER_TARGET) {
-        //TODO finish support for render target + script
-        drv->wnd = nw;
-        return;
-    }
 
     // Cleanup old surface if there is one.
     if (drv->wndSurface) {
         ANativeWindow *old = drv->wndSurface;
-        GraphicBufferMapper &mapper = GraphicBufferMapper::get();
-        mapper.unlock(drv->wndBuffer->handle);
-        old->cancelBuffer(old, drv->wndBuffer, -1);
+        ANativeWindow_unlockAndPost(old);
+        ANativeWindow_release(old);
         drv->wndSurface = nullptr;
-
-        native_window_api_disconnect(old, NATIVE_WINDOW_API_CPU);
-        old->decStrong(nullptr);
     }
 
-    if (nw != nullptr) {
+    if (nw) {
         int32_t r;
-        uint32_t flags = 0;
-
-        if (alloc->mHal.state.usageFlags & RS_ALLOCATION_USAGE_SCRIPT) {
-            flags |= GRALLOC_USAGE_SW_READ_RARELY | GRALLOC_USAGE_SW_WRITE_OFTEN;
-        }
-        if (alloc->mHal.state.usageFlags & RS_ALLOCATION_USAGE_GRAPHICS_RENDER_TARGET) {
-            flags |= GRALLOC_USAGE_HW_RENDER;
-        }
-
-        r = native_window_api_connect(nw, NATIVE_WINDOW_API_CPU);
+        r = ANativeWindow_setBuffersGeometry(nw, alloc->mHal.drvState.lod[0].dimX,
+                                                 alloc->mHal.drvState.lod[0].dimY,
+                                                 WINDOW_FORMAT_RGBA_8888);
         if (r) {
-            rsc->setError(RS_ERROR_DRIVER, "Error setting IO output buffer usage.");
-            goto error;
-        }
-
-        r = native_window_set_usage(nw, flags);
-        if (r) {
-            rsc->setError(RS_ERROR_DRIVER, "Error setting IO output buffer usage.");
-            goto error;
-        }
-
-        r = native_window_set_buffers_dimensions(nw, alloc->mHal.drvState.lod[0].dimX,
-                                                 alloc->mHal.drvState.lod[0].dimY);
-        if (r) {
-            rsc->setError(RS_ERROR_DRIVER, "Error setting IO output buffer dimensions.");
-            goto error;
-        }
-
-        int format = 0;
-        const Element *e = alloc->mHal.state.type->getElement();
-        if ((e->getType() != RS_TYPE_UNSIGNED_8) ||
-            (e->getVectorSize() != 4)) {
-            // We do not check for RGBA, RGBx, to allow for interop with U8_4
-
-            rsc->setError(RS_ERROR_DRIVER, "Surface passed to setSurface is not U8_4, RGBA.");
-            goto error;
-        }
-        format = PIXEL_FORMAT_RGBA_8888;
-
-        r = native_window_set_buffers_format(nw, format);
-        if (r) {
-            rsc->setError(RS_ERROR_DRIVER, "Error setting IO output buffer format.");
-            goto error;
+            rsc->setError(RS_ERROR_DRIVER, "Error setting IO output buffer geometry.");
+            return;
         }
 
         IoGetBuffer(rsc, alloc, nw);
@@ -828,14 +747,6 @@ void rsdAllocationSetSurface(const Context *rsc, Allocation *alloc, ANativeWindo
     }
 
     return;
-
- error:
-
-    if (nw) {
-        nw->decStrong(nullptr);
-    }
-
-
 #endif
 }
 
@@ -850,14 +761,11 @@ void rsdAllocationIoSend(const Context *rsc, Allocation *alloc) {
     }
     if (nw) {
         if (alloc->mHal.state.usageFlags & RS_ALLOCATION_USAGE_SCRIPT) {
-            GraphicBufferMapper &mapper = GraphicBufferMapper::get();
-            mapper.unlock(drv->wndBuffer->handle);
-            int32_t r = nw->queueBuffer(nw, drv->wndBuffer, -1);
+            int32_t r = ANativeWindow_unlockAndPost(nw);
             if (r) {
                 rsc->setError(RS_ERROR_DRIVER, "Error sending IO output buffer.");
                 return;
             }
-
             IoGetBuffer(rsc, alloc, nw);
         }
     } else {

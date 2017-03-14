@@ -23,6 +23,7 @@
 
 #include "core_defs.h"
 #include "entity.h"
+#include "instructions.h"
 #include "stl_util.h"
 #include "types_generated.h"
 #include "visitor.h"
@@ -123,6 +124,7 @@ public:
   Module *addExtInstImport(const char *extName);
   Module *addSource(SourceLanguage lang, int version);
   Module *addSourceExtension(const char *ext);
+  Module *addString(const char *ext);
   Module *addEntryPoint(EntryPointDefinition *entry);
 
   ExtInstImportInst *getGLExt() const { return mGLExt; }
@@ -134,6 +136,10 @@ public:
   getFunctionDefinitionFromInstruction(FunctionInst *) const;
   FunctionDefinition *lookupFunctionDefinitionByName(const char *name) const;
 
+  // Find the name of the instruction, e.g., the name of a function (OpFunction
+  // instruction).
+  // The returned string is owned by the OpName instruction, whose first operand
+  // is the instruction being queried on.
   const char *lookupNameByInstruction(const Instruction *) const;
 
   VariableInst *getInvocationId();
@@ -307,6 +313,7 @@ public:
 
   DebugInfoSection *addSource(SourceLanguage lang, int version);
   DebugInfoSection *addSourceExtension(const char *ext);
+  DebugInfoSection *addString(const char *str);
 
   Instruction *lookupByName(const char *name) const;
   const char *lookupNameByInstruction(const Instruction *) const;

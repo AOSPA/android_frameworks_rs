@@ -22,6 +22,10 @@ rs-prebuilts-full: \
     host_cross_bcc_compat
 endif
 
+# Not building RenderScript modules in PDK builds, as libmediandk
+# is not available in PDK.
+ifneq ($(TARGET_BUILD_PDK), true)
+
 rs_base_CFLAGS := -Werror -Wall -Wextra \
 	-Wno-unused-parameter -Wno-unused-variable
 
@@ -63,8 +67,8 @@ LOCAL_SRC_FILES:= \
 
 
 LOCAL_SHARED_LIBRARIES += libRS_internal libRSCpuRef
-LOCAL_SHARED_LIBRARIES += liblog libutils libEGL libGLESv1_CM libGLESv2
-LOCAL_SHARED_LIBRARIES += libui libgui libandroid
+LOCAL_SHARED_LIBRARIES += liblog libEGL libGLESv1_CM libGLESv2
+LOCAL_SHARED_LIBRARIES += libui libgui libnativewindow
 
 LOCAL_SHARED_LIBRARIES += libbcinfo
 
@@ -185,7 +189,7 @@ LOCAL_SRC_FILES:= \
 	rsType.cpp
 
 LOCAL_SHARED_LIBRARIES += liblog libutils libEGL libGLESv1_CM libGLESv2
-LOCAL_SHARED_LIBRARIES += libdl libgui libui libandroid
+LOCAL_SHARED_LIBRARIES += libdl libgui libui libnativewindow
 LOCAL_SHARED_LIBRARIES += libft2 libpng
 
 LOCAL_SHARED_LIBRARIES += libbcinfo libmediandk
@@ -229,7 +233,7 @@ LOCAL_REQUIRED_MODULES := libRS_internal libRSDriver
 # Treble configuration
 LOCAL_SHARED_LIBRARIES += libhidlbase libhidltransport libhwbinder libutils android.hardware.renderscript@1.0
 
-LOCAL_SHARED_LIBRARIES += liblog libcutils
+LOCAL_SHARED_LIBRARIES += liblog libcutils libandroid_runtime
 
 LOCAL_STATIC_LIBRARIES := \
         libRSDispatch
@@ -240,4 +244,7 @@ LOCAL_LDFLAGS += -Wl,--version-script,${LOCAL_PATH}/libRS.map
 
 include $(BUILD_SHARED_LIBRARY)
 
+endif # TARGET_BUILD_PDK
+
 include $(call all-makefiles-under,$(LOCAL_PATH))
+

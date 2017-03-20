@@ -18,8 +18,8 @@
 #define ANDROID_RS_FONT_H
 
 #include "rsStream.h"
-#include <utils/Vector.h>
 #include <utils/KeyedVector.h>
+#include <utils/Unicode.h>
 
 struct FT_LibraryRec_;
 struct FT_FaceRec_;
@@ -178,7 +178,7 @@ protected:
         bool fitBitmap(FT_Bitmap_ *bitmap, uint32_t *retOriginX, uint32_t *retOriginY);
     };
 
-    Vector<CacheTextureLine*> mCacheLines;
+    std::vector<CacheTextureLine*> mCacheLines;
     uint32_t getRemainingCacheCapacity();
 
     void precacheLatin(Font *font);
@@ -203,7 +203,7 @@ protected:
     FT_LibraryRec_ *mLibrary;
     FT_LibraryRec_ *getLib();
 #endif //ANDROID_RS_SERIALIZE
-    Vector<Font*> mActiveFonts;
+    std::vector<Font*> mActiveFonts;
 
     // Render state for the font
     ObjectBaseRef<Allocation> mFontShaderFConstant;

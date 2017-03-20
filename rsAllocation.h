@@ -19,12 +19,7 @@
 
 #include "rsType.h"
 
-#ifndef RS_COMPATIBILITY_LIB
-#include <gui/CpuConsumer.h>
-#include <gui/GLConsumer.h>
-#else
-struct ANativeWindowBuffer;
-#endif
+#include <vector>
 
 // ---------------------------------------------------------------------------
 namespace android {
@@ -70,7 +65,9 @@ public:
             bool hasReferences;
             void * userProvidedPtr;
             int32_t surfaceTextureID;
-            ANativeWindowBuffer *nativeBuffer;
+            // nativeBuffer is not used anymore, keeping it here
+            // as a void* to keep the structure of Allocation the same.
+            void *nativeBuffer;
             int64_t timestamp;
 
             // Allocation adapter state
@@ -212,7 +209,7 @@ public:
     bool hasSameDims(const Allocation *Other) const;
 
 protected:
-    Vector<const Program *> mToDirtyList;
+    std::vector<const Program *> mToDirtyList;
     ObjectBaseRef<const Type> mType;
     void setType(const Type *t) {
         mType.set(t);

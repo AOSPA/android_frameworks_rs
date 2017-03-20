@@ -32,7 +32,7 @@
 
 #include <time.h>
 
-#ifndef RS_COMPATIBILITY_LIB
+#if !defined(RS_VENDOR_LIB) && !defined(RS_COMPATIBILITY_LIB)
 using android::renderscript::Font;
 #endif
 
@@ -99,7 +99,7 @@ typedef uint64_t ulong;
     typedef struct { const int* const p; } __attribute__((packed, aligned(4))) t; /*NOLINT*/
 #else
 #define OPAQUETYPE(t) \
-    typedef struct { const void* p; const void* r; const void* v1; const void* v2; } t; /*NOLINT*/
+    typedef struct { const void* p; const void* unused1; const void* unused2; const void* unused3; } t; /*NOLINT*/
 #endif
 
 OPAQUETYPE(rs_element)
@@ -807,7 +807,7 @@ float rsGetDt() {
 //////////////////////////////////////////////////////////////////////////////
 // Graphics routines
 //////////////////////////////////////////////////////////////////////////////
-#ifndef RS_COMPATIBILITY_LIB
+#if !defined(RS_VENDOR_LIB) && !defined(RS_COMPATIBILITY_LIB)
 static void SC_DrawQuadTexCoords(float x1, float y1, float z1, float u1, float v1,
                                  float x2, float y2, float z2, float u2, float v2,
                                  float x3, float y3, float z3, float u3, float v3,

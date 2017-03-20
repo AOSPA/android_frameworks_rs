@@ -1,11 +1,11 @@
 LOCAL_PATH:=$(call my-dir)
 
+# Not building RenderScript modules in PDK builds, as libmediandk
+# is not available in PDK.
+ifneq ($(TARGET_BUILD_PDK), true)
+
 rs_base_CFLAGS := -Werror -Wall -Wextra \
-				  -Wno-unused-parameter -Wno-unused-variable \
-				  -std=c++11
-ifeq ($(TARGET_BUILD_PDK), true)
-  rs_base_CFLAGS += -D__RS_PDK__
-endif
+				  -Wno-unused-parameter -Wno-unused-variable
 
 ifneq ($(OVERRIDE_RS_DRIVER),)
   rs_base_CFLAGS += -DOVERRIDE_RS_DRIVER=$(OVERRIDE_RS_DRIVER)
@@ -83,7 +83,7 @@ ifeq ($(ARCH_X86_HAVE_SSSE3),true)
     rsCpuIntrinsics_x86.cpp
 endif
 
-LOCAL_SHARED_LIBRARIES += libRS_internal libc++ liblog libutils libui libz
+LOCAL_SHARED_LIBRARIES += libRS_internal libc++ liblog libui libgui  libz
 LOCAL_SHARED_LIBRARIES += libbcinfo libblas
 LOCAL_STATIC_LIBRARIES := libbnnmlowp
 
@@ -98,3 +98,5 @@ include frameworks/compile/libbcc/libbcc-targets.mk
 LOCAL_CFLAGS += $(rs_base_CFLAGS)
 
 include $(BUILD_SHARED_LIBRARY)
+
+endif # TARGET_BUILD_PDK

@@ -273,6 +273,7 @@ void* SharedLibraryUtils::loadSOHelper(const char *origName, const char *cacheDi
 #define PRAGMA_STR "pragmaCount: "
 #define THREADABLE_STR "isThreadable: "
 #define CHECKSUM_STR "buildChecksum: "
+#define VERSIONINFO_STR "versionInfo: "
 
 // Copy up to a newline or size chars from str -> s, updating str
 // Returns s when successful and nullptr when '\0' is finally reached.
@@ -297,6 +298,18 @@ static char* strgets(char *s, int size, const char **ppstr) {
     s[i] = '\0';
 
     return s;
+}
+
+// Creates a duplicate of a string. The new string is as small as possible,
+// only including characters up to and including the first null-terminator;
+// otherwise, the new string will be the same size as the input string.
+// The code that calls duplicateString is responsible for the new string's
+// lifetime, and is responsible for freeing it when it is no longer needed.
+static char* duplicateString(const char *str, size_t length) {
+    const size_t newLen = strnlen(str, length-1) + 1;
+    char *newStr = new char[newLen];
+    strlcpy(newStr, str, newLen);
+    return newStr;
 }
 
 ScriptExecutable* ScriptExecutable::createFromSharedObject(
@@ -369,8 +382,7 @@ ScriptExecutable* ScriptExecutable::createFromSharedObject(
         }
         fieldAddress[i] = addr;
         fieldIsObject[i] = false;
-        fieldName[i] = new char[strlen(line)+1];
-        strcpy(fieldName[i], line);
+        fieldName[i] = duplicateString(line, sizeof(line));
     }
 
     if (strgets(line, MAXLINE, &rsInfo) == nullptr) {
@@ -623,13 +635,8 @@ ScriptExecutable* ScriptExecutable::createFromSharedObject(
             goto error;
         }
 
-        char *pKey = new char[strlen(key)+1];
-        strcpy(pKey, key);
-        pragmaKeys[i] = pKey;
-
-        char *pValue = new char[strlen(value)+1];
-        strcpy(pValue, value);
-        pragmaValues[i] = pValue;
+        pragmaKeys[i] = duplicateString(key, sizeof(key));
+        pragmaValues[i] = duplicateString(value, sizeof(value));
         //ALOGE("Pragma %zu: Key: '%s' Value: '%s'", i, pKey, pValue);
     }
 
@@ -665,6 +672,26 @@ ScriptExecutable* ScriptExecutable::createFromSharedObject(
         ALOGE("Found invalid checksum.  Expected %08x, got %08x\n",
               expectedChecksum, checksum);
         goto error;
+    }
+
+    {
+      // Parse the version info string, but ignore its contents as it's only
+      // used by the debugger
+      size_t nLines = 0;
+      if (strgets(line, MAXLINE, &rsInfo) != nullptr) {
+        if (sscanf(line, VERSIONINFO_STR "%zu", &nLines) != 1) {
+          ALOGE("invalid versionInfo count");
+          goto error;
+        } else {
+          // skip the versionInfo packet as libRs doesn't use it
+          while (nLines--) {
+            if (strgets(line, MAXLINE, &rsInfo) == nullptr)
+              goto error;
+          }
+        }
+      } else {
+        ALOGE(".rs.info is missing versionInfo section");
+      }
     }
 
 #endif  // RS_COMPATIBILITY_LIB

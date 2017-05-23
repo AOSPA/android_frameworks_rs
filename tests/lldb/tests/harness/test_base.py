@@ -178,10 +178,11 @@ class TestBase(object):
 
         if not res.Succeeded():
             error = res.GetError()
+            error = error if error else res.GetOutput()
             raise self.TestFail('The command "{0}" failed with the error: {1}'
                                 .format(cmd, error if error else '<N/a>'))
 
-        output = res.GetOutput()
+        output = res.GetOutput() or ''
         log.debug('[Output] {0}'.format(output.rstrip()))
 
         return output

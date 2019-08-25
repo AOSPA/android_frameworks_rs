@@ -16,5 +16,5 @@
  * limitations under the License.
  */
 
-#include "convert.rs"
+#include "convert.rscript"
 #pragma rs_fp_relaxed

@@ -207,27 +207,39 @@ void* SharedLibraryUtils::loadSharedLibrary(const char *cacheDir,
     // location for shared libraries first.
     loaded = loadSOHelper(scriptSOName.c_str(), cacheDir, resName, alreadyLoaded);
 
-    if (loaded == nullptr) {
-        ALOGE("Unable to open shared library (%s): %s",
-              scriptSOName.c_str(), dlerror());
+    if (loaded != nullptr) {
+       return loaded;
+    }
+    ALOGE("Unable to open shared library (%s): %s", scriptSOName.c_str(), dlerror());
 
 #ifdef RS_COMPATIBILITY_LIB
-        // One final attempt to find the library in "/system/lib".
-        // We do this to allow bundled applications to use the compatibility
-        // library fallback path. Those applications don't have a private
-        // library path, so they need to install to the system directly.
-        // Note that this is really just a testing path.
-        std::string scriptSONameSystem("/system/lib/librs.");
-        scriptSONameSystem.append(resName);
-        scriptSONameSystem.append(".so");
-        loaded = loadSOHelper(scriptSONameSystem.c_str(), cacheDir,
-                              resName);
-        if (loaded == nullptr) {
-            ALOGE("Unable to open system shared library (%s): %s",
-                  scriptSONameSystem.c_str(), dlerror());
-        }
-#endif
+    // Re-trying without absolute path.
+    // For RS support lib, the shared object may not be extracted from the apk.
+    // In order to access that, we need to load the library without specifying
+    // the absolute path.
+    std::string scriptSONameApk("librs.");
+    scriptSONameApk.append(resName);
+    scriptSONameApk.append(".so");
+    loaded = loadSOHelper(scriptSONameApk.c_str(), cacheDir, resName);
+    if (loaded != nullptr) {
+        return loaded;
     }
+    ALOGE("Unable to open APK shared library (%s): %s", scriptSONameApk.c_str(), dlerror());
+
+    // One final attempt to find the library in "/system/lib".
+    // We do this to allow bundled applications to use the compatibility
+    // library fallback path. Those applications don't have a private
+    // library path, so they need to install to the system directly.
+    // Note that this is really just a testing path.
+    std::string scriptSONameSystem("/system/lib/librs.");
+    scriptSONameSystem.append(resName);
+    scriptSONameSystem.append(".so");
+    loaded = loadSOHelper(scriptSONameSystem.c_str(), cacheDir, resName);
+    if (loaded == nullptr) {
+        ALOGE("Unable to open system shared library (%s): %s",
+              scriptSONameSystem.c_str(), dlerror());
+    }
+#endif
 
     return loaded;
 }
@@ -295,10 +307,12 @@ void* SharedLibraryUtils::loadSOHelper(const char *origName, const char *cacheDi
 
     void *loaded = nullptr;
 
+#ifndef RS_COMPATIBILITY_LIB
     // Skip everything if we don't even have the original library available.
     if (access(origName, F_OK) != 0) {
         return nullptr;
     }
+#endif  // RS_COMPATIBILITY_LIB
 
     // Common path is that we have not loaded this Script/library before.
     if (LoadedLibraries.find(origName) == LoadedLibraries.end()) {

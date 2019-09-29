@@ -6,7 +6,9 @@ cc_library_static {
 
     include_dirs: [
         "frameworks/rs",
-        "libnativehelper/include_jni",
+    ],
+    header_libs: [
+        "jni_headers",
     ],
 
     cflags: [

@@ -75,12 +75,12 @@ cc_library {
     header_libs: [
         "libarect_headers",
         "libbase_headers",
-        "libgui_headers",
         "libnativebase_headers",
         "libnativewindow_headers",
     ],
 
     shared_libs: [
+        "libgui",
         "libutils",
     ],
 

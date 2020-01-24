@@ -32,6 +32,8 @@ cc_defaults {
     name: "libRScpp-defaults",
     defaults: ["rs-version"],
 
+    tidy: false, // b/146435095, segmentation fault with ScriptIntrinsicBLAS.cpp
+
     srcs: [
         "RenderScript.cpp",
         "BaseObj.cpp",

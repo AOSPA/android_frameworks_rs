@@ -64,4 +64,4 @@ done
 rm -rf slangtest
 
 mv RSStubsWhiteList.cpp ../../compile/libbcc/lib/
-
+mv RSStubsWhiteList.h ../../compile/libbcc/lib/

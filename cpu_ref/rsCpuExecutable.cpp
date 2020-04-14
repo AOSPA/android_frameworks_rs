@@ -103,7 +103,7 @@ static bool isRunningInVndkNamespace() {
         Dl_info info;
         if (dladdr(reinterpret_cast<const void*>(&isRunningInVndkNamespace), &info) != 0) {
             std::string filename = std::string(info.dli_fname);
-            return filename.find("/vndk-sp") != std::string::npos;
+            return filename.find("/apex/com.android.vndk") != std::string::npos;
         } else {
             ALOGW("Can't determine whether this lib is running in vndk namespace or not. Assuming it is in vndk namespace.");
         }

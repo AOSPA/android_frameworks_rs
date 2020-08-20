@@ -1,5 +1,6 @@
 cc_library_static {
     name: "libRSDispatch",
+    native_bridge_supported: true,
     vendor_available: true,
 
     srcs: ["rsDispatch.cpp"],

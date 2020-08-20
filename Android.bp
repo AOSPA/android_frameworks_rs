@@ -300,6 +300,7 @@ cc_library_shared {
 cc_library_shared {
     name: "libRS",
     defaults: ["rs_defaults"],
+    native_bridge_supported: true,
     srcs: [
         "rsApiStubs.cpp",
         "rsHidlAdaptation.cpp",

@@ -85,12 +85,6 @@ cc_library_shared {
         },
     },
 
-    target: {
-        arm_on_x86: {
-            cflags: ["-DBUILD_ARM_FOR_X86"],
-        },
-    },
-
     shared_libs: [
         "libRS_internal",
         "libc++",
